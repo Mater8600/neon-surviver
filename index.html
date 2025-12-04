@@ -333,11 +333,419 @@
             draw();
 
             animationId = requestAnimationFrame(animate);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Pong Deluxe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            font-family: 'Press Start 2P', cursive;
+            background-color: #050505;
+            color: white;
+            overflow: hidden;
+            touch-action: none;
+            user-select: none;
         }
 
-        // Initial Draw
-        draw();
+        #gameContainer {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 255, 100, 0.1);
+            border: 4px solid #222;
+        }
 
+        canvas {
+            background-color: #111;
+            display: block;
+        }
+
+        .crt-line {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* Controls hint overlay */
+        .controls-hint {
+            color: #666;
+            font-size: 0.7rem;
+            margin-top: 1.5rem;
+            text-align: center;
+            opacity: 0.8;
+        }
+        
+        .key {
+            display: inline-block;
+            padding: 6px 10px;
+            border-bottom: 3px solid #333;
+            border-radius: 4px;
+            background: #222;
+            color: #eee;
+            margin: 0 3px;
+            font-family: sans-serif;
+            font-weight: 800;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen">
+
+    <div id="gameContainer">
+        <!-- CRT Overlay -->
+        <div class="crt-line"></div>
+
+        <!-- Score Board -->
+        <div class="absolute top-6 w-full flex justify-between px-20 text-5xl font-bold pointer-events-none opacity-40 z-10">
+            <div id="score1" class="text-green-400 drop-shadow-lg">0</div>
+            <div id="score2" class="text-blue-400 drop-shadow-lg">0</div>
+        </div>
+        
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- Start Overlay -->
+        <div id="startScreen" class="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 backdrop-blur-sm">
+            <h1 class="text-5xl mb-2 text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500 font-extrabold tracking-widest text-center" style="filter: drop-shadow(0 0 10px rgba(0,255,0,0.5));">
+                NEO PONG
+            </h1>
+            <p class="text-xs text-gray-500 mb-8 tracking-widest">AUDIO ENHANCED</p>
+            
+            <button id="startBtn" class="px-10 py-4 bg-white text-black hover:bg-green-400 hover:text-white transition-all transform hover:scale-105 active:scale-95 font-bold text-sm tracking-wider shadow-lg border-b-4 border-gray-400 hover:border-green-600">
+                INSERT COIN / START
+            </button>
+        </div>
+    </div>
+
+    <!-- Controls Info -->
+    <div class="controls-hint flex gap-12">
+        <div class="text-center">
+            <span class="text-green-500 block mb-2 text-xs tracking-wider">PLAYER 1</span>
+            <span class="key">W</span> <span class="key">S</span>
+        </div>
+        <div class="text-center">
+            <span class="text-blue-500 block mb-2 text-xs tracking-wider">PLAYER 2</span>
+            <span class="key">↑</span> <span class="key">↓</span>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * AUDIO SYSTEM (Synthesizer)
+         * No external files needed. We build the sounds with math.
+         */
+        const AudioSys = {
+            ctx: null,
+            init: function() {
+                window.AudioContext = window.AudioContext || window.webkitAudioContext;
+                this.ctx = new AudioContext();
+            },
+            playTone: function(freq, type, duration, vol = 0.1) {
+                if (!this.ctx) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                
+                // Envelope (Fade out)
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+                
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                
+                osc.start();
+                osc.stop(this.ctx.currentTime + duration);
+            },
+            hitPaddle: function() { 
+                // High pitch beep
+                this.playTone(600, 'square', 0.1, 0.1); 
+            },
+            hitWall: function() { 
+                // Low thud
+                this.playTone(150, 'triangle', 0.1, 0.15); 
+            },
+            score: function() { 
+                // Success jingle
+                this.playTone(400, 'sine', 0.1, 0.1);
+                setTimeout(() => this.playTone(600, 'sine', 0.2, 0.1), 100);
+            }
+        };
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const score1El = document.getElementById('score1');
+        const score2El = document.getElementById('score2');
+        const startScreen = document.getElementById('startScreen');
+        const startBtn = document.getElementById('startBtn');
+
+        // Config
+        const CANVAS_WIDTH = 800;
+        const CANVAS_HEIGHT = 500;
+        const PADDLE_WIDTH = 18;
+        const PADDLE_HEIGHT = 90;
+        const BALL_SIZE = 14;
+        const INITIAL_BALL_SPEED = 8;
+        const PADDLE_SPEED = 9;
+
+        // Visual Effects State
+        let particles = [];
+        let screenShake = 0;
+
+        // Resize Logic
+        function resizeCanvas() {
+            const maxWidth = Math.min(window.innerWidth - 40, 800);
+            const scale = maxWidth / CANVAS_WIDTH;
+            canvas.style.width = `${maxWidth}px`;
+            canvas.style.height = `${CANVAS_HEIGHT * scale}px`;
+        }
+        canvas.width = CANVAS_WIDTH;
+        canvas.height = CANVAS_HEIGHT;
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        let gameRunning = false;
+
+        const player1 = { x: 20, y: 200, score: 0, color: '#4ade80' };
+        const player2 = { x: CANVAS_WIDTH - 38, y: 200, score: 0, color: '#60a5fa' };
+        
+        const ball = {
+            x: CANVAS_WIDTH / 2,
+            y: CANVAS_HEIGHT / 2,
+            dx: 0,
+            dy: 0,
+            speed: INITIAL_BALL_SPEED,
+            color: '#fff'
+        };
+
+        const keys = { w: false, s: false, ArrowUp: false, ArrowDown: false };
+
+        window.addEventListener('keydown', (e) => { if (keys.hasOwnProperty(e.key)) keys[e.key] = true; });
+        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+
+        startBtn.addEventListener('click', () => {
+            AudioSys.init(); // Initialize audio on user interaction
+            if (AudioSys.ctx.state === 'suspended') AudioSys.ctx.resume();
+            
+            startScreen.style.opacity = '0';
+            setTimeout(() => startScreen.style.display = 'none', 500);
+            
+            resetBall();
+            gameRunning = true;
+            player1.score = 0;
+            player2.score = 0;
+            updateScoreDisplay();
+            animate();
+        });
+
+        // --- Visual Effects System ---
+
+        function createExplosion(x, y, color) {
+            // Create 10-15 particles
+            for (let i = 0; i < 12; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 10,
+                    vy: (Math.random() - 0.5) * 10,
+                    life: 1.0,
+                    color: color,
+                    size: Math.random() * 4 + 2
+                });
+            }
+        }
+
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.03; // Fade out speed
+                p.size *= 0.95; // Shrink speed
+
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        function drawParticles() {
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+            });
+            ctx.globalAlpha = 1.0; // Reset
+        }
+
+        function triggerShake(intensity) {
+            screenShake = intensity;
+        }
+
+        // --- Game Logic ---
+
+        function resetBall() {
+            ball.x = CANVAS_WIDTH / 2 - BALL_SIZE / 2;
+            ball.y = CANVAS_HEIGHT / 2 - BALL_SIZE / 2;
+            ball.speed = INITIAL_BALL_SPEED;
+            ball.color = '#fff';
+            
+            // Random start angle, but ensure it's not too vertical
+            let angle = (Math.random() * Math.PI/4) - Math.PI/8; // -22.5 to 22.5 deg
+            let dirX = Math.random() > 0.5 ? 1 : -1;
+            
+            ball.dx = dirX * ball.speed * Math.cos(angle);
+            ball.dy = ball.speed * Math.sin(angle);
+        }
+
+        function updateScoreDisplay() {
+            score1El.innerText = player1.score;
+            score2El.innerText = player2.score;
+        }
+
+        function movePaddles() {
+            if (keys.w && player1.y > 0) player1.y -= PADDLE_SPEED;
+            if (keys.s && player1.y < CANVAS_HEIGHT - PADDLE_HEIGHT) player1.y += PADDLE_SPEED;
+            if (keys.ArrowUp && player2.y > 0) player2.y -= PADDLE_SPEED;
+            if (keys.ArrowDown && player2.y < CANVAS_HEIGHT - PADDLE_HEIGHT) player2.y += PADDLE_SPEED;
+        }
+
+        function moveBall() {
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Wall Collision
+            if (ball.y <= 0 || ball.y + BALL_SIZE >= CANVAS_HEIGHT) {
+                ball.dy *= -1;
+                AudioSys.hitWall();
+                createExplosion(ball.x, ball.y, '#ffffff');
+            }
+
+            // Check Collision Helper
+            function checkCollision(paddle) {
+                return ball.x < paddle.x + PADDLE_WIDTH &&
+                       ball.x + BALL_SIZE > paddle.x &&
+                       ball.y + BALL_SIZE > paddle.y &&
+                       ball.y < paddle.y + PADDLE_HEIGHT;
+            }
+
+            // Paddle 1 Hit
+            if (checkCollision(player1)) {
+                handleHit(player1);
+            }
+            // Paddle 2 Hit
+            else if (checkCollision(player2)) {
+                handleHit(player2);
+            }
+
+            // Scoring
+            if (ball.x < 0) {
+                player2.score++;
+                AudioSys.score();
+                updateScoreDisplay();
+                triggerShake(20); // Big shake on score
+                resetBall();
+            } else if (ball.x > CANVAS_WIDTH) {
+                player1.score++;
+                AudioSys.score();
+                updateScoreDisplay();
+                triggerShake(20);
+                resetBall();
+            }
+        }
+
+        function handleHit(paddle) {
+            // Prevent ball from getting stuck inside paddle by forcing X position
+            if (paddle === player1) ball.x = player1.x + PADDLE_WIDTH;
+            else ball.x = player2.x - BALL_SIZE;
+
+            ball.color = paddle.color; // Ball takes color of last hitter
+            AudioSys.hitPaddle();
+            createExplosion(ball.x, ball.y, paddle.color);
+            triggerShake(5); // Small shake
+
+            // Physics
+            ball.speed += 0.5;
+            let paddleCenter = paddle.y + PADDLE_HEIGHT/2;
+            let ballCenter = ball.y + BALL_SIZE/2;
+            let intersect = (ballCenter - paddleCenter) / (PADDLE_HEIGHT/2);
+            let bounceAngle = intersect * (Math.PI / 3.5); // Max angle
+            
+            let dirX = paddle === player1 ? 1 : -1;
+            ball.dx = dirX * ball.speed * Math.cos(bounceAngle);
+            ball.dy = ball.speed * Math.sin(bounceAngle);
+        }
+
+        // --- Render Loop ---
+
+        function draw() {
+            // Clear Background
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            // Apply Screen Shake
+            let shakeX = 0;
+            let shakeY = 0;
+            if (screenShake > 0) {
+                shakeX = (Math.random() - 0.5) * screenShake;
+                shakeY = (Math.random() - 0.5) * screenShake;
+                screenShake *= 0.9; // Decay shake
+                if(screenShake < 0.5) screenShake = 0;
+            }
+            
+            ctx.save();
+            ctx.translate(shakeX, shakeY);
+
+            // Draw Net
+            ctx.fillStyle = '#222';
+            for (let i = 10; i < CANVAS_HEIGHT; i += 30) {
+                ctx.fillRect(CANVAS_WIDTH / 2 - 2, i, 4, 15);
+            }
+
+            // Draw Paddles with Glow
+            ctx.shadowBlur = 15;
+            
+            ctx.shadowColor = player1.color;
+            ctx.fillStyle = player1.color;
+            ctx.fillRect(player1.x, player1.y, PADDLE_WIDTH, PADDLE_HEIGHT);
+            
+            ctx.shadowColor = player2.color;
+            ctx.fillStyle = player2.color;
+            ctx.fillRect(player2.x, player2.y, PADDLE_WIDTH, PADDLE_HEIGHT);
+
+            // Draw Ball
+            ctx.shadowColor = ball.color;
+            ctx.fillStyle = ball.color;
+            ctx.fillRect(ball.x, ball.y, BALL_SIZE, BALL_SIZE);
+            
+            ctx.shadowBlur = 0; // Reset glow for particles
+
+            // Draw Particles
+            drawParticles();
+
+            ctx.restore();
+        }
+
+        function animate() {
+            if (!gameRunning) return;
+            movePaddles();
+            moveBall();
+            updateParticles();
+            draw();
+            requestAnimationFrame(animate);
+        }
+        
+        // Initial render
+        draw();
     </script>
 </body>
 </html>
